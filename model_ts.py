@@ -260,11 +260,46 @@ def ev_net_full(X, net):
     o = net(X)
     return o
 
-class GradPlots:
-    def __init__(self):
+class TrainingPlots:
+    def __init__(self, seq, experiment_name, plot_loss=True, plot_accuracy=True, plot_gradients=True):
+        self.plot_loss = plot_loss
+        self.plot_accuracy = plot_accuracy
+        self.plot_gradients = plot_gradients
+        self.seq = seq
+
+        self.loss_hist = []
+        self.acc_hist = []
+        self.prec_hist = []
+        self.recall_hist = []
+        self.f1_hist = []
         self.grads_dict = {}
 
-    def update(self, net):
+        # Count the number of plots to display
+        self.num_plots = sum([plot_loss, plot_accuracy, plot_gradients])
+        self.fig, self.axes = plt.subplots(self.num_plots, 1, figsize=(10, 5 * self.num_plots))
+        
+        self.fig.suptitle(experiment_name)
+        self.fig.canvas.manager.set_window_title(experiment_name)
+
+
+        if self.num_plots == 1:
+            self.axes = [self.axes]  # Ensure axes is always a list
+
+    def update_loss(self, loss):
+        if self.plot_loss:
+            self.loss_hist.append(loss)
+
+    def update_accuracy_metrics(self, accuracy, precision, recall, f1):
+        if self.plot_accuracy:
+            self.acc_hist.append(accuracy)
+            self.prec_hist.append(precision)
+            self.recall_hist.append(recall)
+            self.f1_hist.append(f1)
+
+    def update_gradients(self, net):
+        if not self.plot_gradients:
+            return
+
         for name, parameter in net.named_parameters():
             if parameter.grad is not None:
                 grad_norm = parameter.grad.norm().item()
@@ -272,21 +307,48 @@ class GradPlots:
                     self.grads_dict[name].append(grad_norm)
                 else:
                     self.grads_dict[name] = [grad_norm]
-    def reset(self):
+
+    def reset_gradients(self):
         self.grads_dict = dict()
 
+    def plot_all(self):
+        plot_idx = 0  # Index to keep track of which subplot to use
 
-    def plot(self, ax, fig):
-        for name, grad_history in self.grads_dict.items():
-            ax.plot(grad_history, label=f'{name} grad')
-        ax.set_title('Gradient Norms')
-        ax.legend()
-        fig.canvas.draw()  # Redraw the accuracy figure
-        plt.pause(0.01)  # Pause for a short period to update the plot
+        if self.plot_loss and plot_idx < self.num_plots:
+            ax = self.axes[plot_idx]
+            ax.clear()
+            ax.plot(self.loss_hist[-self.seq:], label='Training Loss')
+            ax.set_title('Training Loss')
+            ax.set_xlabel('Iteration')
+            ax.set_ylabel('Loss')
+            ax.legend()
+            plot_idx += 1
 
-        max_grad = max(max(self.grads_dict[name][-607:]) for name in self.grads_dict)
-        ax.set_ylim([0, max_grad])
+        if self.plot_accuracy and plot_idx < self.num_plots:
+            ax = self.axes[plot_idx]
+            ax.clear()
+            ax.plot(self.acc_hist, label='Accuracy')
+            ax.plot(self.prec_hist, label='Precision')
+            ax.plot(self.recall_hist, label='Recall')
+            ax.plot(self.f1_hist, label='F1 Score')
+            ax.set_title('Validation Metrics')
+            ax.set_xlabel('Iteration')
+            ax.set_ylabel('Score')
+            ax.legend()
+            plot_idx += 1
 
+        if self.plot_gradients and plot_idx < self.num_plots:
+            ax = self.axes[plot_idx]
+            ax.clear()
+            for name, grad_history in self.grads_dict.items():
+                ax.plot(grad_history[-self.seq:], label=f'{name} grad')
+            ax.set_title('Gradient Norms')
+            ax.legend()
+            #max_grad = max(self.grads_dict[name][-self.seq:] for name in self.grads_dict)
+            #ax.set_ylim([0, max_grad])
+
+        self.fig.canvas.draw()
+        plt.pause(0.01)
 
 def train_baseline(datasets):
 
@@ -397,36 +459,28 @@ def train_baseline(datasets):
 
 def train_lstm(datasets):
 
+    experiment_name = "3layers, hs 256"
     input_size = 10
     num_classes = 9
-    hidden_size = 64
-    num_layers = 4
+    hidden_size = 256
+    num_layers = 3
     lr=0.002
-
-    fig_loss, ax_loss = plt.subplots()
-    fig_acc, ax_acc = plt.subplots()
-    fig_grads, ax_grads = plt.subplots()
-
+    print(torch.cuda)
+    print(torch.cuda.is_available())
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
-    net = LSTMNet(input_size, hidden_size, num_layers, num_classes)
+    net = LSTMNet(input_size, hidden_size, num_layers, num_classes).to(device)
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     #scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
 
-    loss_hist = list()
-    acc_hist = list()
-    prec_hist = list()
-    recall_hist = list()
-    f1_hist = list()
     batch_size = 128 
-    num_epochs = 100
+    num_epochs = 3
 
     train_iter = DataIterator(datasets.X_train, datasets.y_train, batch_size, device, shuffle_on_reset=True)
     #test_iter = DataIterator(datasets.X_val, datasets.y_val, batch_size, device)
     
-    grad_plots = GradPlots()
-    
+    plots = TrainingPlots(seq=len(train_iter), experiment_name=experiment_name)    
 
     for epoch in range(num_epochs):
         if epoch != 0:
@@ -444,66 +498,23 @@ def train_lstm(datasets):
                 loss = loss_fn(out, y)
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                #torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 optimizer.step()
+                
 
+                plots.update_loss(loss.item())
                 #print("loss: ", loss.item())
-                loss_hist.append(loss.item())
-                grad_plots.update(net)
-
-            grad_plots.plot(ax_grads, fig_grads)
-            grad_plots.reset()
-
-            ax_loss.clear()  # Clear the loss axis
-            ax_loss.plot(loss_hist, label='Training Loss')  # Plot the training loss
-            ax_loss.set_title('Training Loss')
-            ax_loss.set_xlabel('Iteration')
-            ax_loss.set_ylabel('Loss')
-            ax_loss.legend()
-            fig_loss.canvas.draw()  # Redraw the loss figure
-            plt.pause(0.01)  # Pause for a short period to update the plot
-
-            """
-            plt.subplot(1, 2, 1)  # Prepare subplot for loss plot
-            plt.clf()  # Clear the current figure
-            plt.plot(loss_hist, label='Training Loss')  # Plot the training loss
-            plt.title('Training Loss')
-            plt.xlabel('Iteration')
-            plt.ylabel('Loss')
-            plt.tight_layout()  # Adjust subplots to fit into figure area.
-            plt.draw()  # Redraw the current figure
-            plt.pause(0.01)  # Pause for a short period to update the plot
-            """
-
-            #if len(loss_hist) >= 2000:
-            #    avg_last_1000 = sum(loss_hist[-1000:]) / 1000
-            #    avg_first_1000 = sum(loss_hist[:1000]) / 1000
-            #    if avg_last_1000 <= 100 * avg_first_1000:
-            #        del loss_hist[:1000]
-            #        # Adjust the x-axis to keep the number
-            loss_hist = list()
+                #loss_hist.append(loss.item())
+                plots.update_gradients(net)
 
             accuracy, precision, recall, f1 = evaluate_model(net, datasets, device, ev_net_full)
             print(f"Validation - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
-            acc_hist.append(accuracy)
-            prec_hist.append(precision)
-            recall_hist.append(recall)
-            f1_hist.append(f1)
+            plots.update_accuracy_metrics(accuracy, precision, recall, f1)
+            plots.plot_all()
 
-            ax_acc.clear()  # Clear the accuracy axis
-            ax_acc.plot(acc_hist, label='Accuracy')  # Plot the validation accuracy
-            ax_acc.plot(prec_hist, label='Precission')  # Plot the validation accuracy
-            ax_acc.plot(recall_hist, label='Recall')  # Plot the validation recall
-            ax_acc.plot(f1_hist, label='F1 Score')  # Plot the validation F1 score
-            
-            ax_acc.set_title('Validation')
-            ax_acc.set_xlabel('Iteration')
-            ax_acc.set_ylabel('y')
-            ax_acc.legend()
-            fig_acc.canvas.draw()  # Redraw the accuracy figure
-            plt.pause(0.01)  # Pause for a short period to update the plot
     #plt.show()
     # test
+    plt.show()
     accuracy, precision, recall, f1 = test_model(net, datasets, device, ev_net_full)
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
  
