@@ -1,0 +1,5 @@
+Without LR scheduler, 10-100, 100-100, 100-9, lr 0.002, 
+Validation - Acc: 0.8210526315789474, Prec: 0.8196520228215062, Recall: 0.8210526315789474, F1: 0.8114341340472025
+platued after epoch 9 ish but didnt check... eoch 14 this is
+
+With lr sched, same rest
