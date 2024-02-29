@@ -73,13 +73,17 @@ class BaselineNetFull(nn.Module):
     
 
 class LSTMNet(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, dr_lstm, dr_fc, num_timesteps):
         super(LSTMNet, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=False)
-        self.fc = nn.Linear(hidden_size, num_classes)
-        self.dropout = nn.Dropout(0.3)
+        self.num_timesteps = num_timesteps
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=False, dropout=dr_lstm)
+        self.dropout = nn.Dropout(dr_fc)
+        si = hidden_size * num_timesteps
+        self.fc = nn.Linear(si, si * 12)
+        self.fc2 = nn.Linear(si * 12, si * 12)
+        self.fc3 = nn.Linear(si * 12, num_classes)
 
     def forward(self, x):
         # Initialize hidden and cell states
@@ -88,15 +92,184 @@ class LSTMNet(nn.Module):
         c0 = torch.zeros(self.num_layers, x.size(1), self.hidden_size).to(x.device)
 
         # Forward propagate LSTM
-        out, _ = self.lstm(x, (h0, c0))  # out: tensor of shape (batch_size, seq_length, hidden_size)
-        last = out[-1, :, :]
+        out, _ = self.lstm(x, (h0, c0))  # out: tensor of shape ( seq_length, batch size, hidden_size)
+        #last = out[-1, :, :]
         # Decode the hidden state of the last time step
-        d1 = self.dropout(last)
+        out_reshaped = out.transpose(0,1)
+        out_reshaped2 = out_reshaped.reshape(out.size(1), -1)
+        d1 = self.dropout(out_reshaped2)
         fc1 = self.fc(d1)
-        #d1 = self.dropout(fc1)
-        return fc1
+        r1 = F.relu(fc1)
+        d2 = self.dropout(r1)
+        fc2 = self.fc2(d2)
+        r2 = F.relu(fc2)
+        d3 = self.dropout(r2)
+        fc3 = self.fc3(d3)
 
+        return fc3
+
+class ZeroWithSigmoidGradientFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        # Perform the forward pass operation: gated * 0
+        ctx.save_for_backward(input)
+        return input * 0
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        # Compute the surrogate gradient using the sigmoid function
+        surrogate_grad = grad_output * torch.sigmoid(input)
+        return surrogate_grad
     
+class NegativeReLUGradientFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        # Forward pass, output is zeroed out
+        ctx.save_for_backward(input)
+        return input * 0
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, = ctx.saved_tensors
+        # Compute the gradient using negative ReLU
+        grad_input = grad_output.clone()
+        grad_input[input > 0] = -input[input > 0]
+        return grad_input
+
+
+class LinearGated(nn.Module):
+    def __init__(self, device, batch_size, num_out):
+        super(LinearGated, self).__init__()
+        self.device = device
+        #self.inp = inp
+        self.num_out = num_out
+        #self.spike_decay_rate = spike_decay_rate
+        self.batch_size = batch_size
+
+
+        #self.fc = nn.Linear(inp, out)
+          #add device
+        #self.reset()
+        mu, sigma = 0, 1000  # For threshold
+        mu_decay, sigma_decay = 0.4, 0.5  # For decay rate
+        #mu_spike, sigma_spike = 0, -1.0
+        self.tresh = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma + mu)
+        self.decay_rate = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma_decay + mu_decay)
+        #self.spike_decay_rate = nn.Parameter(torch.abs(torch.rand(size=(self.out,), device=self.device, requires_grad=True)) * sigma_spike + mu_spike)
+        pass 
+
+    def forward(self, x, potential):
+
+        #normed = F.normalize(x)
+        # linear
+        # lin = self.fc(x)
+        # linear negative
+
+        # sigmoid to normalize between 0 and 1.
+        # activated = F.sigmoid(x)
+        #activated = F.relu(x)
+        #activated = F.tanh(x)
+        activated = x 
+
+        # calculate new potential
+        potential = potential + activated
+
+        #gated_potential = F.relu(potential)
+
+        # Zero those where potential < tresh
+        #gated_bool = torch.ge(potential, self.tresh)
+        gated = F.relu(potential - self.tresh)
+        #gated = potential * gated0    
+
+        
+    
+        # reduce the potential of the open gates with spike_decay_rate
+        #post_gated = gated * self.spike_decay_rate
+        post_gated = NegativeReLUGradientFunction.apply(gated)
+
+        # all the gates that were not activated by reli
+
+        # reduce the potential of the closed gates with decay_rate
+        #non_gated_bool = ~gated_bool # negation operator
+        non_gated_bool = (gated == 0).type(torch.float32)  # or use .type(torch.int32) for integer output
+        non_gated = potential * non_gated_bool
+        post_non_gated = non_gated * self.decay_rate
+
+        # now combine the two to the new potential 
+        new_potential = post_gated + post_non_gated
+        potential = F.relu(new_potential)
+
+        return gated, potential
+
+class GatedNet(nn.Module):
+    def __init__(self, device, batch_size, inp, out):
+        super(GatedNet, self).__init__()
+
+        self.batch_size = batch_size
+        self.inp = inp 
+        self.out = out
+        self.device = device
+        self.dropout = 0.2
+
+        self.hs = inp * 3
+        self.fc1 = nn.Linear(inp, self.hs)
+        self.norm1 = nn.LayerNorm(self.hs)
+        self.lg1 = LinearGated(device, batch_size, self.hs)
+        self.d1 = nn.Dropout(self.dropout)
+
+        self.fc2 = nn.Linear(self.hs,self.hs)
+        self.norm2 = nn.LayerNorm(self.hs)
+        self.lg2 = LinearGated(device, batch_size, self.hs)
+        self.d2 = nn.Dropout(self.dropout)
+
+        self.fc3 = nn.Linear(self.hs, out)
+
+
+    def forward(self, data):
+        # Define the forward pass here
+
+
+        pot1 = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
+        pot2 = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
+
+        out = []
+
+        for step in range(data.size(0)):  # data.size(0) = number of time steps
+
+            x = data[step]
+
+            fc1 = self.fc1(x)
+            #norm1 = self.norm1(fc1)
+            lg1, pot1 = self.lg1(fc1, pot1)
+            d1 = self.d1(lg1)
+
+            fc2 = self.fc2(d1)
+            #norm2 = self.norm2(fc2)
+            lg2, pot2 = self.lg2(fc2, pot2)
+            d2 = self.d2(lg2)
+
+            fc3 = self.fc3(d2)
+
+            out.append(fc3)
+
+        last = out[-1]
+        #stacked = torch.stack(out)
+        #x = stacked.sum(dim=0)
+        
+        return last
+    
+class SmoothCrossEntropyLoss(nn.Module):
+    def __init__(self, smoothing=0.1):
+        super(SmoothCrossEntropyLoss, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, input, target):
+        log_prob = F.log_softmax(input, dim=-1)
+        weight = input.new_ones(input.size()) * self.smoothing / (input.size(-1) - 1.)
+        weight.scatter_(-1, target.unsqueeze(-1), (1. - self.smoothing))
+        loss = (-weight * log_prob).sum(dim=-1).mean()
+        return loss
 
 class Dataset:
     def __init__(self, X_train, y_train, X_val, y_val, X_test, y_test):
@@ -260,6 +433,9 @@ def ev_net_full(X, net):
     o = net(X)
     return o
 
+def ev_GatedNet(X, net):
+    return net(X)
+
 class TrainingPlots:
     def __init__(self, seq, experiment_name, plot_loss=True, plot_accuracy=True, plot_gradients=True):
         self.plot_loss = plot_loss
@@ -348,7 +524,7 @@ class TrainingPlots:
             #ax.set_ylim([0, max_grad])
 
         self.fig.canvas.draw()
-        plt.pause(0.01)
+        plt.pause(0.1)
 
 def train_baseline(datasets):
 
@@ -459,23 +635,25 @@ def train_baseline(datasets):
 
 def train_lstm(datasets):
 
-    experiment_name = "3layers, hs 256"
+    experiment_name = "3layers, hs 64, dr_lstm 0.1, epoch 150, bs 128, all_hs 3fc * 12"
     input_size = 10
     num_classes = 9
-    hidden_size = 256
+    hidden_size = 64
     num_layers = 3
     lr=0.002
-    print(torch.cuda)
-    print(torch.cuda.is_available())
+    dr_lstm = 0.1
+    dr_fc = 0.3
+    batch_size = 128
+    num_epochs = 150
+
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
-    net = LSTMNet(input_size, hidden_size, num_layers, num_classes).to(device)
+    net = LSTMNet(input_size, hidden_size, num_layers, num_classes, dr_lstm, dr_fc, 23).to(device)
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     #scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
 
-    batch_size = 128 
-    num_epochs = 3
+    
 
     train_iter = DataIterator(datasets.X_train, datasets.y_train, batch_size, device, shuffle_on_reset=True)
     #test_iter = DataIterator(datasets.X_val, datasets.y_val, batch_size, device)
@@ -498,7 +676,7 @@ def train_lstm(datasets):
                 loss = loss_fn(out, y)
                 optimizer.zero_grad()
                 loss.backward()
-                #torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 optimizer.step()
                 
 
@@ -519,14 +697,75 @@ def train_lstm(datasets):
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
  
 
+def train_gated(datasets):
+
+    experiment_name = "gated 3 layers, hs * 3, dr 0.2, epoch 100, bs 128, lr 0.002"
+    input_size = 10
+    num_classes = 9
+    lr=0.002
+    batch_size = 128
+    num_epochs = 100
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    print(device)
+    net = GatedNet(device, batch_size, input_size, num_classes).to(device)
+
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    #scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
+
+    
+
+    train_iter = DataIterator(datasets.X_train, datasets.y_train, batch_size, device, shuffle_on_reset=True)
+    #test_iter = DataIterator(datasets.X_val, datasets.y_val, batch_size, device)
+    
+    plots = TrainingPlots(seq=len(train_iter), experiment_name=experiment_name)    
+
+    for epoch in range(num_epochs):
+        if epoch != 0:
+            train_iter.reset()
+            #scheduler.step()
+        with tqdm(total=len(train_iter), desc=f"Epoch {epoch+1}/{num_epochs}", position=0, leave=True) as pbar:
+            
+            for i, (X, y) in enumerate(train_iter):
+                pbar.set_postfix_str(f"i={i}")
+                pbar.update(1)
+
+                net.train()
+                #out_sum = ev_net_stepped(X, net)
+                out = net(X)
+                loss = loss_fn(out, y)
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                optimizer.step()
+                
+
+                plots.update_loss(loss.item())
+                #print("loss: ", loss.item())
+                #loss_hist.append(loss.item())
+                plots.update_gradients(net)
+
+            accuracy, precision, recall, f1 = evaluate_model(net, datasets, device, ev_GatedNet)
+            print(f"Validation - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
+            plots.update_accuracy_metrics(accuracy, precision, recall, f1)
+            plots.plot_all()
+
+    #plt.show()
+    # test
+    plt.show()
+    accuracy, precision, recall, f1 = test_model(net, datasets, device, ev_GatedNet)
+    print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
+ 
+
 
 def main():
     datasets = load_data()
 
     
     #train_baseline(datasets)
-    train_lstm(datasets)
-
+    #train_lstm(datasets)
+    train_gated(datasets)
 
 
 
