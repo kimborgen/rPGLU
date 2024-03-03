@@ -3,6 +3,8 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib as mlp
+mlp.use("TkAgg")
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from tqdm import tqdm
@@ -137,7 +139,7 @@ class NegativeReLUGradientFunction(torch.autograd.Function):
         grad_input[input > 0] = -input[input > 0]
         return grad_input
 
-
+"""
 class LinearGated(nn.Module):
     def __init__(self, device, batch_size, num_out):
         super(LinearGated, self).__init__()
@@ -186,6 +188,7 @@ class LinearGated(nn.Module):
     
         # reduce the potential of the open gates with spike_decay_rate
         #post_gated = gated * self.spike_decay_rate
+
         post_gated = NegativeReLUGradientFunction.apply(gated)
 
         # all the gates that were not activated by reli
@@ -201,6 +204,128 @@ class LinearGated(nn.Module):
         potential = F.relu(new_potential)
 
         return gated, potential
+"""
+
+# Define the mathematical function for the inverted bump function
+def inverted_bump_function_math(x):
+    # Function is 1 outside the range -1 to 1
+    f = torch.ones_like(x)
+    # Within the range -1 to 1, apply the inverted bump function
+    mask = (x > -1) & (x < 1)
+    f[mask] = 1 - torch.exp(-1 / (1 - x[mask] ** 2))
+    return f
+
+# Define the derivative of the inverted bump function
+def derivative_inverted_bump_function_math(x):
+    # Derivative is zero outside the range -1 to 1
+    df = torch.zeros_like(x)
+    # Within the range -1 to 1, calculate the derivative
+    mask = (x > -1) & (x < 1)
+    df[mask] = 2 * x[mask] * torch.exp(-1 / (1 - x[mask] ** 2)) / (1 - x[mask] ** 2) ** 2
+    return df
+
+class InvertedBumpFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        # Save input for use in backward pass
+        ctx.save_for_backward(x)
+        
+        # Forward pass: return 1 where x is not 0, otherwise 0 (as a placeholder behavior)
+        output = torch.where(x != 0, torch.tensor(1.0, device=x.device), torch.tensor(0.0, device=x.device))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Retrieve saved input
+        x, = ctx.saved_tensors
+        
+        # Calculate the derivative of the inverted bump function
+        derivative = derivative_inverted_bump_function_math(x)
+        
+        # Apply the chain rule (multiply by incoming gradient)
+        grad_input = derivative * grad_output
+        
+        return grad_input
+
+class BumpFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        # Save input for use in backward pass
+        ctx.save_for_backward(x)
+        
+        # Forward pass: return 1 where x is 0, otherwise 0
+        output = torch.where(x == 0, torch.tensor(1.0, device=x.device), torch.tensor(0.0, device=x.device))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Retrieve saved input
+        x, = ctx.saved_tensors
+        
+        # Create a mask for where the bump function is active (-1 < x < 1)
+        mask = (x > -1) & (x < 1)
+        
+        # Initialize gradient as zero for all elements
+        grad_x = torch.zeros_like(x)
+        
+        # Compute gradient only for the masked elements
+        grad_x[mask] = torch.exp(-1 / (1 - (x[mask] ** 2)))
+        # Normalize the bump function to have a maximum of 1
+        grad_x[mask] = grad_x[mask] / torch.max(grad_x[mask])
+        # Adjust the gradient for the bump function
+        grad_x[mask] = grad_output[mask] * (-2 * x[mask] / (1 - x[mask] ** 2) ** 2) * grad_x[mask]
+        
+        return grad_x
+    
+class LinearGated(nn.Module):
+    def __init__(self, device, batch_size, num_out):
+        super(LinearGated, self).__init__()
+        self.device = device
+        #self.inp = inp
+        self.num_out = num_out
+        #self.spike_decay_rate = spike_decay_rate
+        self.batch_size = batch_size
+
+
+        #self.fc = nn.Linear(inp, out)
+          #add device
+        #self.reset()
+        mu, sigma = 0, 0.9  # For threshold
+        mu_decay, sigma_decay = 0.4, 0.5  # For decay rate
+        #mu_spike, sigma_spike = 0, -1.0
+        self.tresh = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma + mu)
+        self.decay_rate = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma_decay + mu_decay)
+        #self.spike_decay_rate = nn.Parameter(torch.abs(torch.rand(size=(self.out,), device=self.device, requires_grad=True)) * sigma_spike + mu_spike)
+        pass 
+
+    def forward(self, x, potential): 
+
+        # calculate new potential
+        potential = potential + x
+
+        treshed = potential - self.tresh
+
+        # Zero those where potential < tresh
+        gated = F.relu(treshed)
+        
+        # now apply this gated filter to the potential
+        gated_bool = InvertedBumpFunction.apply(gated)
+
+        # This is now what we return from this layer
+        filtered = gated_bool * potential
+        activated = F.relu(filtered)
+
+        # Now we wish to reduce the potential of the open gates with spike_decay_rate
+
+        # reduce the potential of the closed gates with decay_rate
+        non_gated_bool = BumpFunction.apply(gated)
+        non_gated = potential * non_gated_bool
+        potential_non_gated = non_gated * self.decay_rate
+        
+        # Remove negative potentials 
+        new_potential = F.relu(potential_non_gated)
+
+        return activated, new_potential
 
 class GatedNet(nn.Module):
     def __init__(self, device, batch_size, inp, out):
@@ -212,7 +337,7 @@ class GatedNet(nn.Module):
         self.device = device
         self.dropout = 0.2
 
-        self.hs = inp * 3
+        self.hs = inp * 64
         self.fc1 = nn.Linear(inp, self.hs)
         self.norm1 = nn.LayerNorm(self.hs)
         self.lg1 = LinearGated(device, batch_size, self.hs)
@@ -236,6 +361,8 @@ class GatedNet(nn.Module):
         out = []
 
         for step in range(data.size(0)):  # data.size(0) = number of time steps
+
+
 
             x = data[step]
 
@@ -311,21 +438,93 @@ def load_data():
     y_test = y_test.astype(int) - 1
     y_val = y_val.astype(int) - 1
 
+    # normalize
+    X_train_stats = calculate_feature_statistics(X_train)
+    X_val_stats = calculate_feature_statistics(X_val)
+    X_test_stats = calculate_feature_statistics(X_test)
+
     
-    print(" Shape of X_train = ", X_train.shape)
+    #X_val_s = custom_min_max_normalize_np(X_val, min_val=-1000, max_val=2475)
+
+    num_features = 10
+    global_min = np.zeros(num_features)
+    global_max = np.zeros(num_features)
+    
+    for feature_idx in range(num_features):
+        global_min[feature_idx] = min(X_train_stats['min'][feature_idx], X_val_stats['min'][feature_idx], X_test_stats['min'][feature_idx])
+        global_max[feature_idx] = max(X_train_stats['max'][feature_idx], X_val_stats['max'][feature_idx], X_test_stats['max'][feature_idx])
+    
+    #print(global_min, global_max)
+
+    X_train_norm = normalize_features(X_train, global_min, global_max)
+    X_val_norm = normalize_features(X_val, global_min, global_max)
+    X_test_norm = normalize_features(X_test, global_min, global_max)
+    #print(calculate_feature_statistics(X_train_norm))
+    #print(calculate_feature_statistics(X_val_norm))
+    #print(calculate_feature_statistics(X_test_norm))
+    
+    print(" Shape of X_train_norm = ", X_train_norm.shape)
     print(" Shape of y_train = ", y_train.shape)
 
-    print(" Shape of X_test = ", X_test.shape)
+    print(" Shape of X_test_norm = ", X_test_norm.shape)
     print(" Shape of y_test = ", y_test.shape)
 
-    print(" Shape of X_val = ", X_val.shape)
+    print(" Shape of X_val_norm = ", X_val_norm.shape)
     print(" Shape of y_val = ", y_val.shape)
 
   
 
-    datasets = Dataset(X_train, y_train, X_val, y_val, X_test, y_test)
+    datasets = Dataset(X_train_norm, y_train, X_val_norm, y_val, X_test_norm, y_test)
 
     return datasets
+
+def normalize_features(X, global_min, global_max):
+    """
+    Normalize the dataset using the global minimum and maximum values for each feature,
+    scaling each feature to the range [0, 1].
+
+    Args:
+    X (np.ndarray): The dataset to normalize.
+    global_min (np.ndarray): Global minimum values for each feature.
+    global_max (np.ndarray): Global maximum values for each feature.
+
+    Returns:
+    np.ndarray: The normalized dataset.
+    """
+    X_normalized = np.zeros_like(X)
+    num_samples, num_features, num_timesteps = X.shape
+    
+    for feature_idx in range(num_features):
+        min_val = global_min[feature_idx]
+        max_val = global_max[feature_idx]
+        # Ensure division is meaningful; if min and max are the same, feature is constant
+        if min_val != max_val:
+            X_normalized[:, feature_idx, :] = (X[:, feature_idx, :] - min_val) / (max_val - min_val)
+        else:
+            # For constant features, set to 0 (or another value that makes sense in your context)
+            X_normalized[:, feature_idx, :] = 0
+    
+    return X_normalized
+
+def calculate_feature_statistics(X):
+    """
+    Calculate min and max values for each feature across all timesteps.
+
+    Args:
+    X (np.ndarray): Input data of shape (samples, features, timesteps).
+
+    Returns:
+    dict: A dictionary containing the min and max values for each feature.
+    """
+    num_features = X.shape[1]
+    feature_stats = {'min': np.zeros(num_features), 'max': np.zeros(num_features)}
+
+    for feature_idx in range(num_features):
+        feature_data = X[:, feature_idx, :]
+        feature_stats['min'][feature_idx] = feature_data.min()
+        feature_stats['max'][feature_idx] = feature_data.max()
+
+    return feature_stats
 
 def evaluate_model(model, datasets, device, evaluation_fn):
     model.eval()  # Set the model to evaluation mode
@@ -697,12 +896,29 @@ def train_lstm(datasets):
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
  
 
+def custom_min_max_normalize_np(array, min_val=-255, max_val=255):
+    """
+    Normalize a NumPy array with known min and max values to the range [0, 1].
+    
+    Args:
+    array (np.ndarray): The NumPy array to normalize.
+    min_val (float): The minimum value in the original range of the array.
+    max_val (float): The maximum value in the original range of the array.
+
+    Returns:
+    np.ndarray: A NumPy array with values normalized to [0, 1].
+    """
+    # Normalize array to the [0, 1] range using the known min and max
+    normalized_array = (array - min_val) / (max_val - min_val)
+    
+    return normalized_array
+
 def train_gated(datasets):
 
     experiment_name = "gated 3 layers, hs * 3, dr 0.2, epoch 100, bs 128, lr 0.002"
     input_size = 10
     num_classes = 9
-    lr=0.002
+    lr=0.001
     batch_size = 128
     num_epochs = 100
 
@@ -737,6 +953,13 @@ def train_gated(datasets):
                 loss = loss_fn(out, y)
                 optimizer.zero_grad()
                 loss.backward()
+
+                """
+                 # Print all gradients
+                for name, param in net.named_parameters():
+                    if param.requires_grad:
+                        print(f"Gradient of {name} is {param.grad}")
+                """
                 torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
                 optimizer.step()
                 
