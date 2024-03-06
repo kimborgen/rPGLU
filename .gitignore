@@ -7,3 +7,6 @@ runs
 tmp
 ts_data
 venv
+__pycache__/
+experiments/
+*.pth

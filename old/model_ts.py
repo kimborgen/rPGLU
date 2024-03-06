@@ -11,6 +11,7 @@ from tqdm import tqdm
 import math
 import numpy as np
 from torch.optim.lr_scheduler import StepLR
+from prettytable import PrettyTable
 
 
 class BaselineNet(nn.Module):
@@ -83,9 +84,8 @@ class LSTMNet(nn.Module):
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=False, dropout=dr_lstm)
         self.dropout = nn.Dropout(dr_fc)
         si = hidden_size * num_timesteps
-        self.fc = nn.Linear(si, si * 12)
-        self.fc2 = nn.Linear(si * 12, si * 12)
-        self.fc3 = nn.Linear(si * 12, num_classes)
+        self.fc = nn.Linear(si, si * 2)
+        self.fc2 = nn.Linear(si * 2, num_classes)
 
     def forward(self, x):
         # Initialize hidden and cell states
@@ -104,11 +104,8 @@ class LSTMNet(nn.Module):
         r1 = F.relu(fc1)
         d2 = self.dropout(r1)
         fc2 = self.fc2(d2)
-        r2 = F.relu(fc2)
-        d3 = self.dropout(r2)
-        fc3 = self.fc3(d3)
 
-        return fc3
+        return fc2
 
 class ZeroWithSigmoidGradientFunction(torch.autograd.Function):
     @staticmethod
@@ -290,8 +287,8 @@ class LinearGated(nn.Module):
         #self.fc = nn.Linear(inp, out)
           #add device
         #self.reset()
-        mu, sigma = 0, 0.9  # For threshold
-        mu_decay, sigma_decay = 0.4, 0.5  # For decay rate
+        mu, sigma = 0, 0.3  # For threshold
+        mu_decay, sigma_decay = 0.1, 0.7  # For decay rate
         #mu_spike, sigma_spike = 0, -1.0
         self.tresh = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma + mu)
         self.decay_rate = nn.Parameter(torch.abs(torch.rand(size=(self.num_out,), device=self.device, requires_grad=True)) * sigma_decay + mu_decay)
@@ -312,8 +309,7 @@ class LinearGated(nn.Module):
         gated_bool = InvertedBumpFunction.apply(gated)
 
         # This is now what we return from this layer
-        filtered = gated_bool * potential
-        activated = F.relu(filtered)
+        activated = gated_bool * potential
 
         # Now we wish to reduce the potential of the open gates with spike_decay_rate
 
@@ -321,14 +317,11 @@ class LinearGated(nn.Module):
         non_gated_bool = BumpFunction.apply(gated)
         non_gated = potential * non_gated_bool
         potential_non_gated = non_gated * self.decay_rate
-        
-        # Remove negative potentials 
-        new_potential = F.relu(potential_non_gated)
-
-        return activated, new_potential
+    
+        return activated, potential_non_gated
 
 class GatedNet(nn.Module):
-    def __init__(self, device, batch_size, inp, out):
+    def __init__(self, device, batch_size, inp, hs, out):
         super(GatedNet, self).__init__()
 
         self.batch_size = batch_size
@@ -336,8 +329,8 @@ class GatedNet(nn.Module):
         self.out = out
         self.device = device
         self.dropout = 0.2
+        self.hs = hs
 
-        self.hs = inp * 64
         self.fc1 = nn.Linear(inp, self.hs)
         self.norm1 = nn.LayerNorm(self.hs)
         self.lg1 = LinearGated(device, batch_size, self.hs)
@@ -348,7 +341,15 @@ class GatedNet(nn.Module):
         self.lg2 = LinearGated(device, batch_size, self.hs)
         self.d2 = nn.Dropout(self.dropout)
 
-        self.fc3 = nn.Linear(self.hs, out)
+        self.fc3 = nn.Linear(self.hs, self.hs)
+
+
+        si = hs * 23 # num timesteps
+        self.fd1 = nn.Dropout(self.dropout)
+        self.ffc = nn.Linear(si, si * 2)
+        self.fd2 = nn.Dropout(self.dropout)
+        self.ffc2 = nn.Linear(si *2, out)
+
 
 
     def forward(self, data):
@@ -380,11 +381,18 @@ class GatedNet(nn.Module):
 
             out.append(fc3)
 
-        last = out[-1]
-        #stacked = torch.stack(out)
-        #x = stacked.sum(dim=0)
+        stacked = torch.stack(out)
+        # Step 1: Transpose to make 'batch_size' the first dimension
+        tensor_transposed = stacked.transpose(0, 1)  # New shape: (batch_size, timesteps, features)
+        # Step 2: Reshape to concatenate 'timesteps' and 'features'
+        gnn_out = tensor_transposed.reshape(tensor_transposed.shape[0], 23 * self.hs)
+        fd1 = self.fd1(gnn_out)
+        ffc1 = self.ffc(fd1)
+        fr1 = F.relu(ffc1)
+        fd2 = self.fd2(fr1)
+        ffc2 = self.ffc2(fd2) 
         
-        return last
+        return ffc2
     
 class SmoothCrossEntropyLoss(nn.Module):
     def __init__(self, smoothing=0.1):
@@ -834,20 +842,23 @@ def train_baseline(datasets):
 
 def train_lstm(datasets):
 
-    experiment_name = "3layers, hs 64, dr_lstm 0.1, epoch 150, bs 128, all_hs 3fc * 12"
+    experiment_name = "3layers, hs 640, dr_lstm 0.1, epoch 150, bs 128, all_hs 3fc * 12"
     input_size = 10
     num_classes = 9
-    hidden_size = 64
+    hidden_size = 635
     num_layers = 3
     lr=0.002
     dr_lstm = 0.1
     dr_fc = 0.3
     batch_size = 128
-    num_epochs = 150
+    num_epochs = 100
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     
     net = LSTMNet(input_size, hidden_size, num_layers, num_classes, dr_lstm, dr_fc, 23).to(device)
+    print_params(net)
+
+
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
     #scheduler = StepLR(optimizer, step_size=5, gamma=0.1)  
@@ -859,41 +870,59 @@ def train_lstm(datasets):
     
     plots = TrainingPlots(seq=len(train_iter), experiment_name=experiment_name)    
 
-    for epoch in range(num_epochs):
-        if epoch != 0:
-            train_iter.reset()
-            #scheduler.step()
-        with tqdm(total=len(train_iter), desc=f"Epoch {epoch+1}/{num_epochs}", position=0, leave=True) as pbar:
+    try:
+        for epoch in range(num_epochs):
             
-            for i, (X, y) in enumerate(train_iter):
-                pbar.set_postfix_str(f"i={i}")
-                pbar.update(1)
-
-                net.train()
-                #out_sum = ev_net_stepped(X, net)
-                out = ev_net_full(X, net)
-                loss = loss_fn(out, y)
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
-                optimizer.step()
+            if epoch != 0:
+                train_iter.reset()
+                #scheduler.step()
+            with tqdm(total=len(train_iter), desc=f"Epoch {epoch+1}/{num_epochs}", position=0, leave=True) as pbar:
                 
+                for i, (X, y) in enumerate(train_iter):
+                    pbar.set_postfix_str(f"i={i}")
+                    pbar.update(1)
 
-                plots.update_loss(loss.item())
-                #print("loss: ", loss.item())
-                #loss_hist.append(loss.item())
-                plots.update_gradients(net)
+                    net.train()
+                    #out_sum = ev_net_stepped(X, net)
+                    out = ev_net_full(X, net)
+                    loss = loss_fn(out, y)
+                    optimizer.zero_grad()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    
 
-            accuracy, precision, recall, f1 = evaluate_model(net, datasets, device, ev_net_full)
-            print(f"Validation - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
-            plots.update_accuracy_metrics(accuracy, precision, recall, f1)
-            plots.plot_all()
+                    plots.update_loss(loss.item())
+                    #print("loss: ", loss.item())
+                    #loss_hist.append(loss.item())
+                    plots.update_gradients(net)
+
+                accuracy, precision, recall, f1 = evaluate_model(net, datasets, device, ev_net_full)
+                print(f"Validation - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
+                plots.update_accuracy_metrics(accuracy, precision, recall, f1)
+                plots.plot_all()
+    except KeyboardInterrupt:
+        print("hello there")
+        pass
 
     #plt.show()
+            
     # test
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+
     plt.show()
     accuracy, precision, recall, f1 = test_model(net, datasets, device, ev_net_full)
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
+
+    torch.save(net.state_dict(), "models/LSTM_baseline_1.pth")
+
+    plt.show()
+    
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
  
 
 def custom_min_max_normalize_np(array, min_val=-255, max_val=255):
@@ -913,18 +942,44 @@ def custom_min_max_normalize_np(array, min_val=-255, max_val=255):
     
     return normalized_array
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def count_paramters_all(model):
+    return sum(p.numel() for p in model.parameters())
+
+def print_params(model):
+    table = PrettyTable(["Modules", "Parameters", "Requires grad"])
+    total_params = 0
+    total_params_grad = 0
+    for name, parameter in model.named_parameters():
+        param = parameter.numel()
+        table.add_row([name, param, parameter.requires_grad])
+        total_params+=param
+        if parameter.requires_grad:
+            total_params_grad += param
+
+    print(table)
+    print(f"Total Params: {total_params}")
+    print(f"Total Grad Params: {total_params_grad}")
+    return total_params
+
 def train_gated(datasets):
 
-    experiment_name = "gated 3 layers, hs * 3, dr 0.2, epoch 100, bs 128, lr 0.002"
+    experiment_name = "gated 3 layers, hs=10*64, dr 0.2, epoch 100, bs 128, lr 0.0002, 2 layer ANN out si=hs*2"
     input_size = 10
     num_classes = 9
-    lr=0.001
+    lr=0.0002
     batch_size = 128
     num_epochs = 100
+    hidden_size = input_size * 64
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
-    net = GatedNet(device, batch_size, input_size, num_classes).to(device)
+    net = GatedNet(device, batch_size, input_size, hidden_size, num_classes).to(device)
+
+    print_params(net)
+
 
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
@@ -976,9 +1031,21 @@ def train_gated(datasets):
 
     #plt.show()
     # test
-    plt.show()
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+
     accuracy, precision, recall, f1 = test_model(net, datasets, device, ev_GatedNet)
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
+    torch.save(net.state_dict(), "models/SpikeGatedLU_1.pth")
+
+    plt.show()
+    
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+    input("Press Enter to continue...")
+
  
 
 
@@ -987,8 +1054,8 @@ def main():
 
     
     #train_baseline(datasets)
-    #train_lstm(datasets)
-    train_gated(datasets)
+    train_lstm(datasets)
+    #train_gated(datasets)
 
 
 
