@@ -97,8 +97,6 @@ def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=F
                 train_iter.reset()
             with tqdm(total=len(train_iter), desc=f"Epoch {epoch+1}/{params.num_epochs}", position=0, leave=True) as pbar:
                 for i, (X, y) in enumerate(train_iter):
-                    if i == 5:
-                        break
                     pbar.set_postfix_str(f"i={i}")
                     pbar.update(1)
 
@@ -131,7 +129,7 @@ def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=F
                 plotting.plot_all()
     except KeyboardInterrupt:
         try:
-            if not get_Yn("Experiment aborted, test and keep experiment?"):
+            if not get_Yn("Experiment aborted, continue?"):
                 em.delete_current_experiment()
                 exit()
         except KeyboardInterrupt:
@@ -145,8 +143,10 @@ def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=F
     accuracy, precision, recall, f1 = test_model(net, test_iter, eval_net)
     print(f"Test - Acc: {accuracy}, Prec: {precision}, Recall: {recall}, F1: {f1}")
     em.save_test_metrics((accuracy, precision, recall, f1))
+    em.save_experiment_without_model(net, plotting)
 
-    em.save_experiment(net, plotting)
+    if get_Yn("Save model?"):
+        em.save_model(net)
 
-    plotting.plot_and_pause()
+    print("So long and thanks for all the gpu!")
 

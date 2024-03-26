@@ -16,10 +16,10 @@ class LinearGated(nn.Module):
     def __init__(self, params, device, width):
         super(LinearGated, self).__init__()
         self.device = device
-        self.num_out = params.output_size
-        self.batch_size = params.batch_size
+        #self.num_out = params.output_size
+        #self.batch_size = params.batch_size
 
-        mu, sigma = 0, 0.3  # For threshold
+        mu, sigma = 0, 0.5  # For threshold
         mu_decay, sigma_decay = 0.1, 0.7  # For decay rate
         self.tresh = nn.Parameter(torch.abs(torch.rand(size=(width,), device=self.device, requires_grad=True)) * sigma + mu)
         self.decay_rate = nn.Parameter(torch.abs(torch.rand(size=(width,), device=self.device, requires_grad=True)) * sigma_decay + mu_decay)
@@ -123,9 +123,76 @@ class SGLUFFCNNet(nn.Module):
         
         return ffc2
     
-class SGLUNet(nn.Module):
+class SGLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, params, device):
+        super(SGLSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        self.d = nn.Dropout(params.dr_lstm)
+
+        # Input gate layers
+        self.W_ii = nn.Parameter(torch.Tensor(input_size, hidden_size), requires_grad=True)
+        self.W_hi = nn.Parameter(torch.Tensor(hidden_size, hidden_size), requires_grad=True)
+        self.b_i = nn.Parameter(torch.Tensor(hidden_size), requires_grad=True)
+        self.sg_i = LinearGated(params, device, hidden_size)
+
+        # Forget gate layers
+        self.W_if = nn.Parameter(torch.Tensor(input_size, hidden_size), requires_grad=True)
+        self.W_hf = nn.Parameter(torch.Tensor(hidden_size, hidden_size), requires_grad=True)
+        self.b_f = nn.Parameter(torch.Tensor(hidden_size), requires_grad=True)
+        self.sg_f = LinearGated(params, device, hidden_size)
+
+        # Output gate layers
+        self.W_io = nn.Parameter(torch.Tensor(input_size, hidden_size), requires_grad=True)
+        self.W_ho = nn.Parameter(torch.Tensor(hidden_size, hidden_size), requires_grad=True)
+        self.b_o = nn.Parameter(torch.Tensor(hidden_size), requires_grad=True)
+        self.sg_o = LinearGated(params, device, hidden_size)
+
+        # Cell state layers
+        self.W_ic = nn.Parameter(torch.Tensor(input_size, hidden_size), requires_grad=True)
+        self.W_hc = nn.Parameter(torch.Tensor(hidden_size, hidden_size), requires_grad=True)
+        self.b_c = nn.Parameter(torch.Tensor(hidden_size), requires_grad=True)
+
+        self.init_weights()
+    
+    def init_weights(self):
+        stdv = 1.0 / torch.sqrt(torch.tensor(self.hidden_size))
+        print(self.named_parameters())
+        for weight in self.parameters():
+            nn.init.uniform_(weight, -stdv, stdv)
+
+    def forward(self, x, h_t, c_t, pot_f, pot_i, pot_o):
+        """
+        x: Input tensor of shape (batch, input_size)
+        h_t: hidden 
+        c_t: cell state
+        """
+
+        # dropout
+        x = self.d(x)
+        
+        # Forget gate
+        f_t, pot_f = self.sg_f(x @ self.W_if + h_t @ self.W_hf + self.b_f, pot_f)
+        
+        # Input gate
+        i_t, pot_i = self.sg_i(x @ self.W_ii + h_t @ self.W_hi + self.b_i, pot_i)
+        g_t = torch.tanh(x @ self.W_ic + h_t @ self.W_hc + self.b_c)
+        
+        # Output gate
+        o_t, pot_o= self.sg_o(x @ self.W_io + h_t @ self.W_ho + self.b_o, pot_o)
+        
+        # Update cell state
+        c_next = f_t * c_t + i_t * g_t
+        
+        # Update hidden state
+        h_next = o_t * torch.tanh(c_next)
+        
+        return h_next, c_next, pot_f, pot_i, pot_o
+    
+class SGLSTMNet(nn.Module):
     def __init__(self, params, device):
-        super(SGLUNet, self).__init__()
+        super(SGLSTMNet, self).__init__()
 
         self.batch_size = params.batch_size
         self.inp = params.input_size 
@@ -134,200 +201,64 @@ class SGLUNet(nn.Module):
         self.dropout = 0.2
         self.hs = params.hidden_size
 
-        self.fc1 = nn.Linear(self.inp, self.hs)
-        self.norm1 = nn.LayerNorm(self.hs)
-        self.lg1 = LinearGated(self.device, self.batch_size, self.hs)
-        self.d1 = nn.Dropout(self.dropout)
-
-        self.fc2 = nn.Linear(self.hs,self.hs)
-        self.norm2 = nn.LayerNorm(self.hs)
-        self.lg2 = LinearGated(self.device, self.batch_size, self.hs)
-        self.d2 = nn.Dropout(self.dropout)
-        self.fc3 = nn.Linear(self.hs, self.out)
+        self.sglstm = SGLSTM(self.inp, self.hs, params, device)
+        self.fc_out = nn.Linear(self.hs, self.out)
 
     def forward(self, data):
-        # Define the forward pass here
-
-
-        pot1 = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
-        pot2 = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
-
+        f = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
+        i = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
+        o = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
+        h, c = (torch.zeros(data.size(1), self.hs).to(self.device), torch.zeros(data.size(1), self.hs).to(self.device))
         out = []
 
         for step in range(data.size(0)):  # data.size(0) = number of time steps
 
             x = data[step]
+            h, c, f, i, o = self.sglstm(x, h, c, f, i, o)
+            out.append(h)
 
-            fc1 = self.fc1(x)
-
-            #norm1 = self.norm1(fc1)
-            lg1, pot1 = self.lg1(fc1, pot1)
-            d1 = self.d1(lg1)
-
-            fc2 = self.fc2(d1)
-            #norm2 = self.norm2(fc2)
-            lg2, pot2 = self.lg2(fc2, pot2)
-            d2 = self.d2(lg2)
-
-            fc3 = self.fc3(d2)
-
-            out.append(fc3)
-
-        return out[-1]
-    
-class AR_SGLUNet(nn.Module):
-    def __init__(self, params, device):
-        super(AR_SGLUNet, self).__init__() 
-
-        self.params = params
-        self.device = device
-        self.hs = params.hidden_size * 2
-
-        self.fc1 = nn.Linear(params.input_size, params.hidden_size)
-        self.lg1 = LinearGated(params, device, params.hidden_size)
-        self.d1 = nn.Dropout(params.dr)
-
-        self.fc2 = nn.Linear(self.hs, self.hs)
-        #self.norm2 = nn.LayerNorm(params.hidden_size)
-        self.lg2 = LinearGated(params, device, self.hs)
-        self.d2 = nn.Dropout(params.dr)
-        self.fc3 = nn.Linear(self.hs, params.hidden_size)
-
-        self.fc_out = nn.Linear(params.hidden_size, params.output_size)
-
-    def forward(self, data):
-        # Define the forward pass here
-
-        pot1 = torch.zeros((data.size(1), self.params.hidden_size), device=self.device, requires_grad=True)
-        pot2 = torch.zeros((data.size(1), self.hs), device=self.device, requires_grad=True)
-
-        out = []
-
-        for step in range(data.size(0)):  # data.size(0) = number of time steps
-
-            x = data[step]
-
-            fc1 = self.fc1(x)
-
-            lg1, pot1 = self.lg1(fc1, pot1)
-            d1 = self.d1(lg1)
-
-            if len(out) > 0:
-                with_previous = torch.cat((d1, out[-1]), dim=1)
-            else:
-                empty = torch.zeros(data.size(1), self.params.hidden_size, device=self.device, requires_grad=True)
-                with_previous = torch.cat((d1, empty), dim=1)
-
-            fc2 = self.fc2(with_previous)
-            lg2, pot2 = self.lg2(fc2, pot2)
-            d2 = self.d2(lg2)
-
-            fc3 = self.fc3(d2)
-
-            out.append(fc3)
         last = out[-1]
         fc_out = self.fc_out(last)
-
         return fc_out
 
-
-def ev_GatedNet(X, net):
+def ev_SGLSTM(X, net):
     return net(X)
 
 @dataclass
-class SGLUFFCParams(ExperimentParams):
+class SGLSTMParams(ExperimentParams):
     hidden_size: int
+    dr_lstm: float
 
-def get_sgluffc_params():
+def get_sglstm_params():
     input_size = 10
     hidden_size = input_size * 64
 
-    return SGLUFFCParams(
-        model_id="sglu",
-        short_name="sglu_ffc",
-        description="gated 3 layers, hs=10*64, dr 0.2, epoch 100, bs 128, lr 0.0002, 2 layer ANN out si=hs*2",
+    return SGLSTMParams(
+        model_id="sglstm",
+        short_name="sglstm",
+        description="single SGLSTM, 1 layer ANN out",
         input_size=input_size,
         output_size=9,
         lr=0.0002,
         batch_size=128,
         num_epochs=100,
         hidden_size=hidden_size,
-        clip_grad_norm=1.0
-    )
-
-@dataclass
-class SGLUParams(ExperimentParams):
-    hidden_size: int
-
-def get_SGLUParams():
-    input_size = 10
-    hidden_size = 1024
-
-    return SGLUParams(
-        model_id="sglu",
-        short_name="sglu_last",
-        description="3 layer sglu using the last timestep as output",
-        input_size=input_size,
-        output_size=9,
-        lr=0.0002,
-        batch_size=128,
-        num_epochs=100,
         clip_grad_norm=1.0,
-        hidden_size=hidden_size
-    )
-
-def get_sgluffc_params():
-    input_size = 10
-    hidden_size = input_size * 64
-
-    return SGLUFFCParams(
-        model_id="sglu",
-        short_name="sglu_ffc",
-        description="gated 3 layers, hs=10*64, dr 0.2, epoch 100, bs 128, lr 0.0002, 2 layer ANN out si=hs*2",
-        input_size=input_size,
-        output_size=9,
-        lr=0.0002,
-        batch_size=128,
-        num_epochs=100,
-        hidden_size=hidden_size,
-        clip_grad_norm=1.0
-    )
-
-@dataclass
-class AR_SGLUParams(ExperimentParams):
-    hidden_size: int
-    dr: float
-
-def get_AR_SGLUParams():
-    input_size = 10
-    hidden_size = 1337
-
-    return AR_SGLUParams(
-        model_id="sglu",
-        short_name="sglu_last",
-        description="3 layer sglu using the last timestep as output",
-        input_size=input_size,
-        output_size=9,
-        lr=0.002,
-        batch_size=128,
-        num_epochs=1000,
-        clip_grad_norm=1.0,
-        hidden_size=hidden_size,
-        dr=0.2
+        dr_lstm= 0.2
     )
 
 def train_gated():
-    params = get_AR_SGLUParams()  
+    params = get_sglstm_params()  
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print("Using device: ", device)
 
-    net = AR_SGLUNet(params, device).to(device)
+    net = SGLSTMNet(params, device).to(device)
     print_params(net)
 
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=params.lr)
 
-    train_model(params, device, net, loss_fn, optimizer, ev_GatedNet)
+    train_model(params, device, net, loss_fn, optimizer, ev_SGLSTM)
 
 if __name__=="__main__":
     train_gated()

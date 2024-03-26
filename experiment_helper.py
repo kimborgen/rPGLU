@@ -72,19 +72,25 @@ class ExperimentManager:
         with open(params_file, 'w') as f:
             json.dump(asdict(self.current_params), f, indent=4)
 
-    def save_experiment(self, model, plotting):
-        # save model
-        model_path = os.path.join(self.current_experiment_folder, f"{os.path.basename(self.current_experiment_folder)}_model.pth")
-        torch.save(model.state_dict(), model_path)
-
+    def save_plot(self, plotting):
         # save plots
         plotting.save_plot(self.current_experiment_folder, "plots.png")
 
+    def save_model_info(self, model):
         # save model info
         model_str = str(model)
         model_info_file = os.path.join(self.current_experiment_folder, 'model_info.txt')
         with open(model_info_file, 'w') as f:
             f.write(model_str)
+
+    def save_experiment_without_model(self, model, plotting):
+        self.save_model_info(model)
+        self.save_plot(plotting)
+
+    def save_model(self, model):
+        # save model
+        model_path = os.path.join(self.current_experiment_folder, f"{os.path.basename(self.current_experiment_folder)}_model.pth")
+        torch.save(model.state_dict(), model_path)
 
     def load_experiment(self, model_id, short_name, index):
         experiment_folder = os.path.join(self.root_path, f"{model_id}/{short_name}_{index}")
