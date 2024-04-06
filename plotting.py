@@ -1,7 +1,8 @@
 import matplotlib as mlp
-mlp.use("TkAgg")
+#mlp.use("TkAgg")
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 
 class TrainingPlots:
     def __init__(self, seq, experiment_name, plot_loss=True, plot_accuracy=True, plot_gradients=True):
@@ -10,8 +11,13 @@ class TrainingPlots:
         self.plot_gradients = plot_gradients
         self.seq = seq
 
+
+        self.rolling_loss = 50
+        self.rolling_acc = 4
         self.loss_hist = []
+        self.loss_hist_avg_rolling = []
         self.acc_hist = []
+        self.acc_hist_avg_rolling = []
         self.prec_hist = []
         self.recall_hist = []
         self.f1_hist = []
@@ -31,6 +37,9 @@ class TrainingPlots:
     def update_loss(self, loss):
         if self.plot_loss:
             self.loss_hist.append(loss)
+            if len(self.loss_hist) > self.rolling_loss:
+                self.loss_hist_avg_rolling.append(np.average(self.loss_hist[-self.rolling_loss:]))
+
 
     def update_accuracy_metrics(self, accuracy, precision, recall, f1):
         if self.plot_accuracy:
@@ -38,6 +47,10 @@ class TrainingPlots:
             self.prec_hist.append(precision)
             self.recall_hist.append(recall)
             self.f1_hist.append(f1)
+            
+            if len(self.acc_hist) > self.rolling_acc:
+                self.acc_hist_avg_rolling.append(np.average(self.acc_hist[-self.rolling_acc:]))
+
 
     def update_gradients(self, net):
         if not self.plot_gradients:
@@ -61,6 +74,8 @@ class TrainingPlots:
             ax = self.axes[plot_idx]
             ax.clear()
             ax.plot(self.loss_hist[-self.seq:], label='Training Loss')
+           
+            ax.plot(self.loss_hist_avg_rolling[-self.seq+self.rolling_loss:])  
             ax.set_title('Training Loss')
             ax.set_xlabel('Iteration')
             ax.set_ylabel('Loss')
@@ -74,6 +89,7 @@ class TrainingPlots:
             ax.plot(self.prec_hist, label='Precision')
             ax.plot(self.recall_hist, label='Recall')
             ax.plot(self.f1_hist, label='F1 Score')
+            ax.plot(self.acc_hist_avg_rolling, label='Rolling average')
             ax.set_title('Validation Metrics')
             ax.set_xlabel('Iteration')
             ax.set_ylabel('Score')

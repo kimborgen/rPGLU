@@ -80,11 +80,11 @@ def get_lstm_last_params():
         description="Last lstm layer out",
         input_size=10,
         output_size=9,
-        lr=0.002,
+        lr=0.02,
         batch_size=128,
         num_epochs=100,
         clip_grad_norm=1.0,
-        hidden_size=945,
+        hidden_size=27,
         dr_lstm = 0.1,
         steps = 23,
         num_layers=2
@@ -103,6 +103,6 @@ def train_lstm():
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=params.lr)
 
-    train_model(params, device, net, loss_fn, optimizer, ev_lstm)
+    train_model(params, device, net, loss_fn, optimizer, ev_lstm, print_grads=True)
 
 train_lstm()
