@@ -6,6 +6,7 @@ Hypothesis: The behaviour of potential in biological neurons capture interesting
 I used the Tiselac timeseries dataset for development: https://www.timeseriesclassification.com/description.php?Dataset=Tiselac
 
 Mulitple approaches have been tried, but this is a brief description of the latest version of rPGLU:
+- The recurrent Potential-Gated Linear Unit is a piecewise linear unit where y = x + potential for x + potential > treshold and y = 0 for x + potential <= treshold
 - The hidden state of the recurrent network is the potential vector.
 - Potential for each neuron builds up or dissapears over time based on input values.
 - If the potential goes above a treshold, the potential is sent trough to the next layer, otherwise it is 0.
