@@ -1,4 +1,7 @@
 # rPGLU: recurrent Potential-Gated Linear Unit (WIP)
+
+![rpgludiagram drawio (1)](https://github.com/user-attachments/assets/6e9e6be0-996c-4b4e-9252-dcbbb1ceccba)
+
 The main achivement of this work is the rPGLU. Currently named SLGU in repo and exists in the `/SGLU` folder. 
 
 Hypothesis: The behaviour of potential in biological neurons capture interesting timing dynamics, can we replicate this behaviour and increase the performance of Artifical Neural Networks without full biological modelling as in Spiking Neural Networks?
