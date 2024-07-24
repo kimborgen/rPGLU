@@ -10,6 +10,7 @@ import csv
 import signal
 import time
 from threading import Timer
+import torch.nn.functional as F
 
 def evaluate_model(model, val_iterator, evaluation_fn):
     model.eval()  # Set the model to evaluation mode
@@ -81,7 +82,7 @@ def signal_handler_second(signum, frame):
     raise KeyboardInterrupt
     
 
-def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=False, print_loss=False):
+def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=False, print_loss=False, layernorm_grads=False, post_loss_fn=lambda x,z: None):
     
     train_iter, val_iter, test_iter = get_datasets(params, device)
     plotting = TrainingPlots(seq=len(train_iter), experiment_name=params.short_name + ": " + params.description)
@@ -107,17 +108,28 @@ def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=F
                     optimizer.zero_grad()
                     loss.backward()
 
+                    if params.clip_grad_norm != 0.0:
+                        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=params.clip_grad_norm)
+
                     if print_grads:
                         # Print all gradients
                         for name, param in net.named_parameters():
                             if param.requires_grad:
-                                print(f"Gradient of {name} is {torch.sum(param.grad)}")
+                                print(f"Gradient of {name} is {param.grad}")
+
+                    if layernorm_grads:
+                        for name, param in net.named_parameters():
+                            if param.requires_grad:
+                                print(f"Gradient sum of {name} is {torch.sum(param.grad)}")
+                                param.grad = F.layer_norm(param.grad, param.grad.shape)
+                                print(f"Normed gradient sum of {name} is {torch.sum(param.grad)}")
                     
                     if print_loss:
                         print(f"Loss: {loss}")
-                
-                    if params.clip_grad_norm != 0.0:
-                        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=params.clip_grad_norm)
+
+                    
+                    post_loss_fn(net, params)
+                    
 
                     optimizer.step()
 
