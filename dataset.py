@@ -79,13 +79,20 @@ def load_datasets():
     y_test = y_test.astype(int) - 1
     y_val = y_val.astype(int) - 1
 
-    # normalize
+    X_train_norm, X_val_norm, X_test_norm = normalize(X_train, X_val, X_test)
+
+    return X_train_norm, y_train, X_val_norm, y_val, X_test_norm, y_test
+
+def normalize(X_train, X_val, X_test):
+    """
+    Takes in the entire dataset, calculates the min and max for each feature across all timesteps and across all splits.
+    and normalizes the dataset to the range [0, 1]
+    """
+
+
     X_train_stats = calculate_feature_statistics(X_train)
     X_val_stats = calculate_feature_statistics(X_val)
     X_test_stats = calculate_feature_statistics(X_test)
-
-    
-    #X_val_s = custom_min_max_normalize_np(X_val, min_val=-1000, max_val=2475)
 
     num_features = 10
     global_min = np.zeros(num_features)
@@ -97,25 +104,21 @@ def load_datasets():
     
     #print(global_min, global_max)
 
-    X_train_norm = normalize_features(X_train, global_min, global_max)
-    X_val_norm = normalize_features(X_val, global_min, global_max)
-    X_test_norm = normalize_features(X_test, global_min, global_max)
-    #print(calculate_feature_statistics(X_train_norm))
-    #print(calculate_feature_statistics(X_val_norm))
-    #print(calculate_feature_statistics(X_test_norm))
+    X_train_norm = normalize_features_to_neg_1_pos_1(X_train, global_min, global_max)
+    X_val_norm = normalize_features_to_neg_1_pos_1(X_val, global_min, global_max)
+    X_test_norm = normalize_features_to_neg_1_pos_1(X_test, global_min, global_max)
+    
+    print(f"Min/max of each feature in train: {calculate_feature_statistics(X_train_norm)}")
+    print(f"Min/max of each feature in val: {calculate_feature_statistics(X_val_norm)}")
+    print(f"Min/max of each feature in test: {calculate_feature_statistics(X_test_norm)}")
     
     print(" Shape of X_train_norm = ", X_train_norm.shape)
-    print(" Shape of y_train = ", y_train.shape)
-
     print(" Shape of X_test_norm = ", X_test_norm.shape)
-    print(" Shape of y_test = ", y_test.shape)
-
     print(" Shape of X_val_norm = ", X_val_norm.shape)
-    print(" Shape of y_val = ", y_val.shape)
 
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train_norm, X_val_norm, X_test_norm
 
-def normalize_features(X, global_min, global_max):
+def normalize_features_to_0_1(X, global_min, global_max):
     """
     Normalize the dataset using the global minimum and maximum values for each feature,
     scaling each feature to the range [0, 1].
@@ -143,6 +146,36 @@ def normalize_features(X, global_min, global_max):
     
     return X_normalized
 
+def normalize_features_to_neg_1_pos_1(X, global_min, global_max):
+    """
+    Normalize the dataset using the global minimum and maximum values for each feature,
+    scaling each feature to the range [-1, 1].
+
+    Args:
+    X (np.ndarray): The dataset to normalize, shape (samples, features, timesteps).
+    global_min (np.ndarray): Global minimum values for each feature.
+    global_max (np.ndarray): Global maximum values for each feature.
+
+    Returns:
+    np.ndarray: The normalized dataset.
+    """
+    X_normalized = np.zeros_like(X)
+    num_samples, num_features, num_timesteps = X.shape
+
+    for feature_idx in range(num_features):
+        min_val = global_min[feature_idx]
+        max_val = global_max[feature_idx]
+
+        # Ensure division is meaningful; if min and max are the same, feature is constant
+        if min_val != max_val:
+            # New formula to scale to [-1, 1]
+            X_normalized[:, feature_idx, :] = 2 * (X[:, feature_idx, :] - min_val) / (max_val - min_val) - 1
+        else:
+            # For constant features, set to 0 (or another value that makes sense in your context)
+            X_normalized[:, feature_idx, :] = 0
+
+    return X_normalized
+
 def calculate_feature_statistics(X):
     """
     Calculate min and max values for each feature across all timesteps.
@@ -153,7 +186,7 @@ def calculate_feature_statistics(X):
     Returns:
     dict: A dictionary containing the min and max values for each feature.
     """
-    num_features = X.shape[1]
+    num_samples, num_features, num_timesteps = X.shape
     feature_stats = {'min': np.zeros(num_features), 'max': np.zeros(num_features)}
 
     for feature_idx in range(num_features):
@@ -162,3 +195,6 @@ def calculate_feature_statistics(X):
         feature_stats['max'][feature_idx] = feature_data.max()
 
     return feature_stats
+
+if __name__ == "__main__":
+    load_datasets()
