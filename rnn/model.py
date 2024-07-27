@@ -29,11 +29,65 @@ class RNN(nn.Module):
        return torch.tanh(x_t @ self.W_ih + self.b_i + h @ self.W_hh + self.b_h)
        
 
-def prnt(module, grad_input, grad_output):
+def grad_layernorm(module, grad_input, grad_output):
     #print(module)
-    #print(grad_input)
-    #print(grad_output)
     return (F.layer_norm(grad_input[0], grad_input[0].shape), F.layer_norm(grad_input[1], grad_input[1].shape))
+
+def grad_tanh(m, i, o):
+    return (F.tanh(i[0]), F.tanh(i[1]))
+
+def one_centered(x):
+    return 
+
+def custom_sigmoid_neg(x):
+    return torch.sigmoid(7 * (x+1)) - 1.5
+
+def custom_sigmoid_pos(x):
+     return torch.sigmoid(7 * (x-1)) + 0.5
+
+def squished_tanh(x):
+    return torch.tanh(10 * x) * 0.5
+
+def custom_grad_scale(x):
+    # Masks
+    mask_tanh = (x > -0.5) & (x < 0.5)
+    mask_sig_neg = (x <= -0.5)
+    mask_sig_pos = (x >= 0.5)
+
+    # Apply custom tanh to specific elements
+    result = torch.zeros_like(x)
+    result[mask_tanh] = squished_tanh(x[mask_tanh])
+    result[mask_sig_neg] = custom_sigmoid_neg(x[mask_sig_neg])
+    result[mask_sig_pos] = custom_sigmoid_pos(x[mask_sig_pos])
+    return result
+
+def grad_custom(m, i, o):
+    return (custom_grad_scale(i[0]), custom_grad_scale(i[1]))
+
+def custom_grad_scale2(x):
+    def sig_neg(x):
+        return torch.sigmoid(7 * (x+1.5)) - 2
+
+    def sig_pos(x):
+        return torch.sigmoid(7 * (x-1.5)) + 1
+
+    def squ_tanh(x):
+        return torch.tanh(5 * x)
+        
+    # Masks
+    mask_tanh = (x > -1) & (x < 1)
+    mask_sig_neg = (x <= -1)
+    mask_sig_pos = (x >= 1)
+
+    # Apply custom tanh to specific elements
+    result = torch.zeros_like(x)
+    result[mask_tanh] = squ_tanh(x[mask_tanh])
+    result[mask_sig_neg] = sig_neg(x[mask_sig_neg])
+    result[mask_sig_pos] = sig_pos(x[mask_sig_pos])
+    return result
+
+def grad_custom_2(m, i, o):
+    return (custom_grad_scale2(i[0]), custom_grad_scale2(i[1]))
 
 class SimpleRNN(nn.Module):
     def __init__(self, params, device):
@@ -44,7 +98,7 @@ class SimpleRNN(nn.Module):
         self.device = device
         
         self.rnn = RNN(params, device)
-        self.rnn.register_full_backward_hook(prnt)
+        self.rnn.register_full_backward_hook(grad_custom_2)
 
         # Output layer
         self.linear = nn.Linear(self.hs, self.out)
@@ -76,15 +130,20 @@ def get_rnn_params():
     return RNNParams(
         model_id="rnn",
         short_name="simple_rnn",
-        description="dirt simple rnn",
+        description="dirt simple rnn, clip=1.0, grad_custom2 rnn back",
         input_size=10,
         output_size=9,
         lr=0.02,
         batch_size=128,
-        num_epochs=100,
-        clip_grad_norm=1.0,
+        num_epochs=1000,
+        clip_grad_norm=0.0,
         hidden_size=64
     )
+
+def post_loss_fn(net, params):
+    for name, param in net.named_parameters():
+        if param.requires_grad:
+            param.grad = F.tanh(param.grad)
 
 def train_lstm():
     params = get_rnn_params()  
@@ -99,6 +158,6 @@ def train_lstm():
     loss_fn = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=params.lr)
 
-    train_model(params, device, net, loss_fn, optimizer, ev_rnn)
+    train_model(params, device, net, loss_fn, optimizer, ev_rnn, print_grads=False)
 
 train_lstm()
