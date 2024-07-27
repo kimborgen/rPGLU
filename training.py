@@ -10,6 +10,7 @@ import csv
 import signal
 import time
 from threading import Timer
+from dataclasses import asdict
 
 def evaluate_model(model, val_iterator, evaluation_fn):
     model.eval()  # Set the model to evaluation mode
@@ -81,13 +82,21 @@ def signal_handler_second(signum, frame):
     raise KeyboardInterrupt
     
 
-def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=False, print_loss=False):
+def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=False, print_loss=False, automate=False, automate_save_model=False):
     
     train_iter, val_iter, test_iter = get_datasets(params, device)
-    plotting = TrainingPlots(seq=len(train_iter), experiment_name=params.short_name + ": " + params.description)
+
+    # convert param dict to str
+    experiment_params = asdict(params)
+    experiment_params_str = str(experiment_params)
+    experiment_name = params.short_name + ": " + params.description
+
+    print("Experiment params str: ", experiment_params_str)
+
+    plotting = TrainingPlots(seq=len(train_iter), experiment_name=experiment_name, description=experiment_params_str)
 
     em = ExperimentManager()
-    em.create_experiment(params)
+    em.create_experiment(params, net)
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -148,7 +157,9 @@ def train_model(params, device, net, loss_fn, optimizer, eval_net, print_grads=F
     em.save_test_metrics((accuracy, precision, recall, f1))
     em.save_experiment_without_model(net, plotting)
 
-    if get_Yn("Save model?"):
+    if automate and automate_save_model:
+        em.save_model(net)
+    elif not automate and get_Yn("Save model?"):
         em.save_model(net)
 
     print("So long and thanks for all the gpu!")

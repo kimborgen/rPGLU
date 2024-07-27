@@ -1,4 +1,6 @@
 from prettytable import PrettyTable
+import torch
+import math
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -21,3 +23,18 @@ def print_params(model):
     print(f"Total Params: {total_params}")
     print(f"Total Grad Params: {total_params_grad}")
     return total_params
+
+def scaled_bell_distribution_capped_at_2_times_sigma(size, center, sigma):
+    return torch.clamp(torch.randn(size) * (sigma/1.5) + center, min=center-2*sigma, max=center+2*sigma)
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    result = scaled_bell_distribution_capped_at_2_times_sigma(10000, 0.7, 0.1)
+    print(result.sort())
+
+    plt.hist(result.numpy(), bins=50)
+    plt.title(f"Distribution centered at {0.7} with variability {0.1}")
+    plt.xlabel("Value")
+    plt.ylabel("Frequency")
+    plt.show()

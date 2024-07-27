@@ -1,16 +1,17 @@
 import matplotlib as mlp
-#mlp.use("TkAgg")
+mlp.use("TkAgg")
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+from textwrap import wrap
 
 class TrainingPlots:
-    def __init__(self, seq, experiment_name, plot_loss=True, plot_accuracy=True, plot_gradients=True):
+    def __init__(self, seq, experiment_name, description=None, plot_loss=True, plot_accuracy=True, plot_gradients=True):
         self.plot_loss = plot_loss
         self.plot_accuracy = plot_accuracy
         self.plot_gradients = plot_gradients
         self.seq = seq
-
+        self.description = description
 
         self.rolling_loss = 50
         self.rolling_acc = 4
@@ -25,14 +26,20 @@ class TrainingPlots:
 
         # Count the number of plots to display
         self.num_plots = sum([plot_loss, plot_accuracy, plot_gradients])
-        self.fig, self.axes = plt.subplots(self.num_plots, 1, figsize=(10, 5 * self.num_plots))
+        self.fig, self.axes = plt.subplots(self.num_plots, 1, figsize=(10, 5 * self.num_plots + 1))  # Added extra space for description
         
-        self.fig.suptitle(experiment_name)
+        self.fig.suptitle(experiment_name, fontsize=16, y=0.98)  # Adjusted y position
         self.fig.canvas.manager.set_window_title(experiment_name)
 
+        if self.description:
+            wrapped_text = '\n'.join(wrap(self.description, width=80))
+            self.fig.text(0.5, 0.96, wrapped_text, ha='center', va='top', fontsize=10, wrap=True)
 
         if self.num_plots == 1:
             self.axes = [self.axes]  # Ensure axes is always a list
+
+        # Adjust the layout to make room for the description
+        self.fig.tight_layout(rect=[0, 0, 1, 0.94])
 
     def update_loss(self, loss):
         if self.plot_loss:

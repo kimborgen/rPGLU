@@ -2,6 +2,7 @@ from dataclasses import dataclass, asdict,is_dataclass
 import os
 import shutil
 import json
+from prettytable import PrettyTable
 import torch
 import csv
 
@@ -45,7 +46,7 @@ class ExperimentManager:
         self._save_experiment_indices()
         return self.experiment_indices[model_id]
 
-    def create_experiment(self, params):
+    def create_experiment(self, params, model):
         if not is_dataclass(params) or not isinstance(params, ExperimentParams):
             raise ValueError("params must be a dataclass instance derived from ExperimentParams.")
         self.current_params = params
@@ -66,11 +67,34 @@ class ExperimentManager:
         
         # Save params
         self.save_experiment_params()
+        self.save_model_params(model)
 
     def save_experiment_params(self):
         params_file = os.path.join(self.current_experiment_folder, 'params.json')
         with open(params_file, 'w') as f:
             json.dump(asdict(self.current_params), f, indent=4)
+
+    def save_model_params(self, model):
+        params_file = os.path.join(self.current_experiment_folder, 'model_params.txt')
+
+        table = PrettyTable(["Modules", "Parameters", "Requires grad"])
+        total_params = 0
+        total_params_grad = 0
+        for name, parameter in model.named_parameters():
+            param = parameter.numel()
+            table.add_row([name, param, parameter.requires_grad])
+            total_params+=param
+            if parameter.requires_grad:
+                total_params_grad += param
+
+        model_params_str = str(table) + "\n"
+        model_params_str += f"\nTotal Params: {total_params}"
+        model_params_str += f"\nTotal Grad Params: {total_params_grad}"
+
+        print(f"Model params:\n{model_params_str}")
+
+        with open(params_file, 'w') as f:
+            f.write(model_params_str)
 
     def save_plot(self, plotting):
         # save plots
