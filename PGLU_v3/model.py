@@ -162,8 +162,16 @@ def train_gated():
     print("Using device: ", device)
 
     experiements = [
-        {"hidden_size": 64, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1},
+        {"batch_size": 128, "lr": 0.0008, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
+        {"batch_size": 128, "lr": 0.0004, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
+        {"batch_size": 128, "lr": 0.0002, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
+        {"batch_size": 128, "lr": 0.001, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": True},
+        {"batch_size": 128, "lr": 0.001, "hidden_size": 256, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
+        {"batch_size": 128, "lr": 0.001, "hidden_size": 256, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": True},
+        {"batch_size": 64, "lr": 0.001, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
+        {"batch_size": 64, "lr": 0.0006, "hidden_size": 128, "init_decay_center": 0.7, "init_decay_sigma": 0.1, "init_tresh_center": 0.4, "init_tresh_sigma": 0.1, "pglu_linear_bias": False},
     ]
+    # the last one performed best, 89.6% and loss ending in 0.15 ish
 
     for exp in experiements:
         params.init_decay_center = exp["init_decay_center"]
@@ -171,6 +179,9 @@ def train_gated():
         params.init_tresh_center = exp["init_tresh_center"]
         params.init_tresh_sigma = exp["init_tresh_sigma"]
         params.hidden_size = exp["hidden_size"]
+        params.lr = exp["lr"]
+        params.pglu_linear_bias = exp["pglu_linear_bias"]
+        params.batch_size = exp["batch_size"]
 
         net = Net(params, device).to(device)
 
